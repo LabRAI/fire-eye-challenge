@@ -1,0 +1,35 @@
+name: Account and database health
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: account-health
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check the account gateway and its database
+        id: health
+        continue-on-error: true
+        run: python3 heartbeat.py --output status/account-health.json
+      - name: Record weekly operational heartbeat
+        if: always()
+        run: |
+          if [ "$(date -u +%u)" = 1 ] || [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            git config user.name 'Fire-eye maintenance'
+            git config user.email 'fire-eye-maintenance@users.noreply.github.com'
+            git add status/account-health.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Record weekly account and database health'
+              git push
+            fi
+          fi
+      - name: Report service unavailability
+        if: steps.health.outcome == 'failure'
+        run: exit 1
