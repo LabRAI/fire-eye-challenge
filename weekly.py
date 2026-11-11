@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import time
 import numpy as np
@@ -185,9 +186,15 @@ def run():
     for path in receipt_paths:
         result_path='results/'+path.split('/')[-1];previous_result=parse(read(result_path)) if result_path in entries else None
         if previous_result and previous_result.get('status')=='finalized':results[result_path]=previous_result;continue
+        receipt=None
         try:
             if entries[path].size>524288:raise ValueError('Receipt exceeds size budget')
-            receipt=parse(read(path));definition=rounds[receipt['submission']['round_id']];mask=read(definition['mask_path'])
+            receipt=parse(read(path));round_id=receipt['submission']['round_id'];revision=receipt.get('round_revision','')
+            if round_id not in rounds or not re.fullmatch('[a-f0-9]{40}',revision):raise ValueError('Unverified round revision')
+            snapshot='https://huggingface.co/datasets/'+REPO+'/resolve/'+revision+'/'
+            definition=parse(download(snapshot+'rounds/'+round_id+'/round.json'))
+            if definition['id']!=round_id:raise ValueError('Pinned round mismatch')
+            mask=read(definition['mask_path'])
             if sha(mask)!=definition['mask_sha256']:raise ValueError('Round mask integrity error')
             commit_date=entries[path].last_commit.date
             if isinstance(commit_date,str):commit_date=instant(commit_date)
@@ -223,7 +230,7 @@ def run():
         except Exception:
             failures+=1
             if previous_result:record=previous_result
-            else:record={'id':path.split('/')[-1][:-5],'status':'review required','method':METHOD,'windows':[]}
+            else:record={'id':path.split('/')[-1][:-5],'model_name':'Submitted forecast','model_version':'','round_id':path.split('/')[1],'status':'review required','method':METHOD,'windows':[]}
         if record!=previous_result:put(result_path,record)
         results[result_path]=record
     all_paths={**entries,**pending}
@@ -235,6 +242,7 @@ def run():
     # The pinned parent detects concurrent participant uploads. A conflict retries next schedule.
     result=api.create_commit(REPO,repo_type='dataset',parent_commit=head,commit_message='Refresh weekly rounds and observed-fire comparisons',operations=operations)
     print(json.dumps({'revision':result.oid,'rounds':len(rounds),'receipts':len(receipt_paths),'deferred_checks':failures,'runner':'github-hosted'}))
+    if failures or reference_status!='current':raise SystemExit(2)
 
 if __name__=='__main__':
     run()
